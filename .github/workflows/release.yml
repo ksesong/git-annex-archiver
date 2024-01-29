@@ -49,7 +49,7 @@ jobs:
         id: "hash"
         run: |
           gh release download v${{ needs.extract-version.outputs.version }} --archive=tar.gz
-          echo "::set-output name=sha256::$(shasum -a 256 archiver-${{ needs.extract-version.outputs.version }}.tar.gz | cut -d " " -f 1)"
+          echo "::set-output name=sha256::$(shasum -a 256 git-annex-archiver-${{ needs.extract-version.outputs.version }}.tar.gz | cut -d " " -f 1)"
   upload-assets:
     needs: ["extract-version", "create-release"]
     strategy:
@@ -74,42 +74,42 @@ jobs:
             libgtk-3-dev libxdo-dev libappindicator3-dev
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: archiver
+          bin: git-annex-archiver
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: refs/tags/v${{ needs.extract-version.outputs.version }}
-  commit-archiver-homebrew-formula:
-    name: commit-archiver-homebrew-formula
+  commit-git-annex-archiver-homebrew-formula:
+    name: commit-git-annex-archiver-homebrew-formula
     needs: ["extract-version", "create-release"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
         with:
-          repository: ksesong/homebrew-archiver
+          repository: ksesong/homebrew-git-annex-archiver
           token: ${{ secrets.REPOSITORY_ACCESS_TOKEN }}
       - run: |
-          tee archiver.rb << END
-          class Archiver < Formula
+          tee git-annex-archiver.rb << END
+          class GitAnnexArchiver < Formula
             desc "Coordinates typical git-annex routines."
-            homepage "https://github.com/ksesong/archiver"
-            url "https://github.com/ksesong/archiver/archive/refs/tags/v${{ needs.extract-version.outputs.version }}.tar.gz"
+            homepage "https://github.com/ksesong/git-annex-archiver"
+            url "https://github.com/ksesong/git-annex-archiver/archive/refs/tags/v${{ needs.extract-version.outputs.version }}.tar.gz"
             sha256 "${{ needs.create-release.outputs.sha256 }}"
 
             depends_on "rust" => :build
 
             def install
-              system "cargo", "build", "--release", "--bin", "archiver"
-              bin.install "target/release/archiver"
+              system "cargo", "build", "--release", "--bin", "git-annex-archiver"
+              bin.install "target/release/git-annex-archiver"
             end
 
             service do
-              run opt_bin/"archiver"
+              run opt_bin/"git-annex-archiver"
               environment_variables PATH: std_service_path_env
               process_type :interactive
               keep_alive crashed: true
             end
 
             test do
-              assert_equal "version: ${{ needs.extract-version.outputs.version }}", shell_output("#{bin}/archiver --version").strip
+              assert_equal "version: ${{ needs.extract-version.outputs.version }}", shell_output("#{bin}/git-annex-archiver --version").strip
             end
           end
           END
@@ -120,7 +120,7 @@ jobs:
         continue-on-error: true
       - uses: ad-m/github-push-action@master
         with:
-          repository: ksesong/homebrew-archiver
+          repository: ksesong/homebrew-git-annex-archiver
           github_token: ${{ secrets.REPOSITORY_ACCESS_TOKEN }}
           branch: main
         continue-on-error: true
