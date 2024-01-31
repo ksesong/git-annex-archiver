@@ -210,6 +210,14 @@ async fn make_embedded_git_copies(search_path: &PathBuf, log_target: &mut LogTar
                                     false => {
                                         match fs::copy(&master_entry_path, &copy_entry_path) {
                                             Ok(_) => {
+                                                let mut perms = fs::metadata(&copy_entry_path)
+                                                    .unwrap()
+                                                    .permissions();
+                                                if perms.readonly() {
+                                                    perms.set_readonly(false);
+                                                    fs::set_permissions(&copy_entry_path, perms)
+                                                        .unwrap();
+                                                }
                                                 log(
                                                     &format!("cp {}", entry_relpath_display),
                                                     log_target,
