@@ -154,9 +154,31 @@ pub async fn test_available_remotes(
                     .output()
                     .await
                     .unwrap();
+                Command::new("git")
+                    .args([
+                        "config",
+                        "--replace-all",
+                        &format!("remote.{}.annex-ignore", remote),
+                        "false",
+                    ])
+                    .current_dir(repo_path)
+                    .output()
+                    .await
+                    .unwrap();
                 log(&format!("{} ({}) ok", remote, cost), log_target).await;
                 available_remotes.push(remote);
             } else {
+                Command::new("git")
+                    .args([
+                        "config",
+                        "--replace-all",
+                        &format!("remote.{}.annex-ignore", remote),
+                        "true",
+                    ])
+                    .current_dir(repo_path)
+                    .output()
+                    .await
+                    .unwrap();
                 log(&format!("{} not ok", remote), log_target).await;
             }
         } else {
