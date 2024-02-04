@@ -83,7 +83,7 @@ pub(crate) async fn maintain(
             }
 
             for (repo_index, repo_path) in repo_paths.iter().enumerate() {
-                notify_progress(format!("{} of {}", repo_index + 1, repo_paths.len()));
+                notify_progress(format!("{}/{}", repo_index + 1, repo_paths.len()));
                 let available_remotes = test_available_remotes(repo_path, log_target).await;
 
                 command_output_logfile(

@@ -27,7 +27,7 @@ pub async fn allocate(
 ) -> bool {
     let mut is_ok: bool = true;
     for (repo_index, repo_path) in repo_paths.iter().enumerate() {
-        notify_progress(format!("{} of {}", repo_index + 1, repo_paths.len()));
+        notify_progress(format!("{}/{}", repo_index + 1, repo_paths.len()));
 
         let mut is_repo_ok: bool = true;
         log(
