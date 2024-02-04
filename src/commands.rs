@@ -6,9 +6,11 @@ use tokio::{
     process::Command,
 };
 
-pub mod allocate;
 pub mod maintain;
 pub mod sync;
+
+#[cfg(not(target_os = "linux"))]
+pub mod allocate;
 
 pub enum LogTarget<'a> {
     File(&'a mut File),
