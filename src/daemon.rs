@@ -26,11 +26,12 @@ use tao::platform::macos::ActivationPolicy;
 #[cfg(target_os = "macos")]
 use tao::platform::macos::EventLoopExtMacOS;
 
+use crate::commands::allocate::allocate;
 use crate::commands::maintain::maintain;
 use crate::commands::sync::sync;
 use crate::commands::LogTarget;
 use crate::format::{
-    format_command_log_path, format_last_submenu_item_text, format_last_submenu_text,
+    format_command_log_path, format_latest_submenu_item_text, format_latest_submenu_text,
     format_maintain_status_text, format_next_item_text, format_repo_path_display,
     format_repo_path_suffix, format_schedule_active_text, format_sync_status_text,
     parse_command_log_path,
@@ -83,6 +84,8 @@ pub(crate) async fn run_daemon() {
         .expect("unable to create config sync directory");
     fs::create_dir_all(config_dir_path.join("maintain"))
         .expect("unable to create config maintain directory");
+    fs::create_dir_all(config_dir_path.join("allocate"))
+        .expect("unable to create config maintain directory");
 
     let config: Config = toml::from_str(
         &fs::read_to_string(config_dir_path.join("config")).expect("unable to read config"),
@@ -113,9 +116,11 @@ pub(crate) async fn run_daemon() {
 
     let mut sync_logs: Vec<CommandLog> = vec![];
     let mut maintain_logs: Vec<CommandLog> = vec![];
+    let mut allocate_logs: Vec<CommandLog> = vec![];
     for (pattern, logs) in vec![
         ("sync/sync-*.log", &mut sync_logs),
         ("maintain/maintain-*.log", &mut maintain_logs),
+        ("allocate/allocate-*.log", &mut allocate_logs),
     ] {
         for log_path in glob(&config_dir_path.join(pattern).as_os_str().to_str().unwrap())
             .expect("unable to read glob pattern")
@@ -152,8 +157,8 @@ pub(crate) async fn run_daemon() {
     );
 
     let sync_status_i = MenuItem::new(format_sync_status_text(&None), false, None);
-    let sync_last_i = Submenu::new(
-        format_last_submenu_text(
+    let sync_latest_i = Submenu::new(
+        format_latest_submenu_text(
             CommandName::Sync,
             if sync_logs.len() > 0 {
                 Some(&sync_logs[0])
@@ -164,9 +169,9 @@ pub(crate) async fn run_daemon() {
         sync_logs.len() > 0,
     );
     for log in &sync_logs {
-        sync_last_i
+        sync_latest_i
             .append(&MenuItem::new(
-                format_last_submenu_item_text(log),
+                format_latest_submenu_item_text(log),
                 true,
                 None,
             ))
@@ -201,8 +206,8 @@ pub(crate) async fn run_daemon() {
     .unwrap();
 
     let maintain_status_i = MenuItem::new(format_maintain_status_text(&false), false, None);
-    let maintain_last_i = Submenu::new(
-        format_last_submenu_text(
+    let maintain_latest_i = Submenu::new(
+        format_latest_submenu_text(
             CommandName::Maintain,
             if &maintain_logs.len() > &0 {
                 Some(&maintain_logs[0])
@@ -213,9 +218,9 @@ pub(crate) async fn run_daemon() {
         maintain_logs.len() > 0,
     );
     for log in &maintain_logs {
-        maintain_last_i
+        maintain_latest_i
             .append(&MenuItem::new(
-                format_last_submenu_item_text(log),
+                format_latest_submenu_item_text(log),
                 true,
                 None,
             ))
@@ -242,15 +247,40 @@ pub(crate) async fn run_daemon() {
     )
     .unwrap();
 
+    let allocate_latest_i = Submenu::new(
+        format_latest_submenu_text(
+            CommandName::Allocate,
+            if allocate_logs.len() > 0 {
+                Some(&allocate_logs[0])
+            } else {
+                None
+            },
+        ),
+        sync_logs.len() > 0,
+    );
+    for log in &allocate_logs {
+        allocate_latest_i
+            .append(&MenuItem::new(
+                format_latest_submenu_item_text(log),
+                true,
+                None,
+            ))
+            .unwrap();
+    }
+    let allocate_i = MenuItem::new("Allocate Files", true, None);
+
     tray_menu
         .append_items(&[
             &sync_status_i,
-            &sync_last_i,
             &sync_next_i,
+            &sync_latest_i,
             &PredefinedMenuItem::separator(),
             &maintain_status_i,
-            &maintain_last_i,
             &maintain_next_i,
+            &maintain_latest_i,
+            &PredefinedMenuItem::separator(),
+            &allocate_i,
+            &allocate_latest_i,
             &PredefinedMenuItem::separator(),
             &quit_i,
         ])
@@ -287,6 +317,16 @@ pub(crate) async fn run_daemon() {
         MaintainEnded {
             is_ok: bool,
         },
+        AllocateStarted {
+            command_dt: DateTime<Local>,
+        },
+        AllocateEnded {
+            is_ok: bool,
+        },
+        CommandProgressNotified {
+            command_name: CommandName,
+            progress: String,
+        },
         DayChanged,
     }
 
@@ -296,11 +336,24 @@ pub(crate) async fn run_daemon() {
         Sender<CommandMessage>,
         Receiver<CommandMessage>,
     ) = mpsc::channel(1);
+    let (allocate_command_tx, mut allocate_command_rx): (
+        Sender<CommandMessage>,
+        Receiver<CommandMessage>,
+    ) = mpsc::channel(1);
 
     let spawn_sync_config_dir_path = config_dir_path.clone();
     let spawn_sync_event_loop_proxy: tao::event_loop::EventLoopProxy<CustomEvent> =
         event_loop.create_proxy();
     tokio::spawn(async move {
+        let notify_progress = |progress| {
+            spawn_sync_event_loop_proxy
+                .send_event(CustomEvent::CommandProgressNotified {
+                    command_name: CommandName::Sync,
+                    progress,
+                })
+                .ok();
+        };
+
         let mut is_schedule_enabled = true;
         let mut prev_ended_dt: Option<DateTime<Local>> = None;
         while let Some(command_message) = sync_command_rx.recv().await {
@@ -336,6 +389,7 @@ pub(crate) async fn run_daemon() {
                     &command_message.command_args.repo_paths,
                     command_message.command_args.includes_unchanged.unwrap(),
                     &mut LogTarget::File(&mut logfile),
+                    notify_progress,
                 )
                 .await
                 .unwrap();
@@ -351,6 +405,15 @@ pub(crate) async fn run_daemon() {
     let spawn_maintain_event_loop_proxy: tao::event_loop::EventLoopProxy<CustomEvent> =
         event_loop.create_proxy();
     tokio::spawn(async move {
+        let notify_progress = |progress| {
+            spawn_maintain_event_loop_proxy
+                .send_event(CustomEvent::CommandProgressNotified {
+                    command_name: CommandName::Maintain,
+                    progress,
+                })
+                .ok();
+        };
+
         let mut is_schedule_enabled = true;
         let mut prev_ended_dt: Option<DateTime<Local>> = None;
         while let Some(command_message) = maintain_command_rx.recv().await {
@@ -388,6 +451,7 @@ pub(crate) async fn run_daemon() {
                         &mut LogTarget::File(&mut logfile),
                         &mut LogTarget::File(&mut logfile_sync),
                     ),
+                    notify_progress,
                 )
                 .await
                 .unwrap();
@@ -397,6 +461,69 @@ pub(crate) async fn run_daemon() {
                 prev_ended_dt = Some(Local::now());
             }
         }
+    });
+
+    let spawn_allocate_config_dir_path = config_dir_path.clone();
+    let spawn_allocate_event_loop_proxy: tao::event_loop::EventLoopProxy<CustomEvent> =
+        event_loop.create_proxy();
+    tokio::spawn(async move {
+        let notify_progress = |progress| {
+            spawn_allocate_event_loop_proxy
+                .send_event(CustomEvent::CommandProgressNotified {
+                    command_name: CommandName::Allocate,
+                    progress,
+                })
+                .ok();
+        };
+
+        let mut prev_command_dt: Option<DateTime<Local>> = None;
+        while let Some(command_message) = allocate_command_rx.recv().await {
+            let command_dt = command_message.command_dt;
+
+            spawn_allocate_event_loop_proxy
+                .send_event(CustomEvent::AllocateStarted { command_dt })
+                .ok();
+
+            let mut logfile = File::create(&format_command_log_path(
+                &spawn_allocate_config_dir_path,
+                CommandName::Allocate,
+                &command_dt,
+                &None,
+            ))
+            .await
+            .expect("unable to create allocate log");
+
+            let is_ok = allocate(
+                &command_message.command_args.repo_paths,
+                prev_command_dt,
+                &mut LogTarget::File(&mut logfile),
+                notify_progress,
+            )
+            .await;
+
+            spawn_allocate_event_loop_proxy
+                .send_event(CustomEvent::AllocateEnded { is_ok })
+                .ok();
+            prev_command_dt = Some(command_dt);
+        }
+    });
+
+    let init_allocate_command_tx = allocate_command_tx.clone();
+    let init_allocate_repo_paths: Vec<PathBuf> = repo_paths.clone();
+    tokio::spawn(async move {
+        init_allocate_command_tx
+            .send(CommandMessage {
+                message_type: CommandMessageType::StartByManual,
+                command_dt: Local::now(),
+                command_name: CommandName::Allocate,
+                command_args: CommandArgs {
+                    repo_paths: init_allocate_repo_paths.clone(),
+                    includes_unchanged: None,
+                    suffix: None,
+                },
+            })
+            .await
+            .unwrap();
     });
 
     let (mut scheduler, scheduler_service) = Scheduler::<Local>::launch(tokio::time::sleep);
@@ -503,7 +630,7 @@ pub(crate) async fn run_daemon() {
 
     let event_loop_day_proxy: tao::event_loop::EventLoopProxy<CustomEvent> =
         event_loop.create_proxy();
-    let scheduler_day_job = Job::cron("0 0 0 * * *").unwrap();
+    let scheduler_day_job = Job::cron("1 0 0 * * *").unwrap();
     scheduler
         .insert(scheduler_day_job, move |_id| {
             let event_loop_day_proxy = event_loop_day_proxy.clone();
@@ -518,6 +645,7 @@ pub(crate) async fn run_daemon() {
     let event_repo_paths: Vec<PathBuf> = repo_paths.clone();
     let event_sync_command_tx = sync_command_tx.clone();
     let event_maintain_command_tx = maintain_command_tx.clone();
+    let event_allocate_command_tx = allocate_command_tx.clone();
     let event_base_icon = base_icon.clone();
     let event_active_icon = active_icon.clone();
     let event_error_icon = error_icon.clone();
@@ -542,9 +670,12 @@ pub(crate) async fn run_daemon() {
                 sync_logs.insert(
                     0,
                     CommandLog {
+                        command_name: CommandName::Sync,
                         command_dt,
                         suffix,
+                        progress: None,
                         is_ongoing: true,
+                        is_ok: None,
                     },
                 );
                 if sync_logs.len() > LOG_MAX_CT {
@@ -558,40 +689,41 @@ pub(crate) async fn run_daemon() {
                     .expect("unable to remove log");
                     sync_logs.remove(LOG_MAX_CT);
                 }
-                sync_last_i.set_text(format_last_submenu_text(
+                sync_latest_i.set_text(format_latest_submenu_text(
                     CommandName::Sync,
                     Some(&sync_logs[0]),
                 ));
-                if sync_last_i.items().len() < LOG_MAX_CT {
-                    sync_last_i
+                if sync_latest_i.items().len() < LOG_MAX_CT {
+                    sync_latest_i
                         .prepend(&MenuItem::new(
-                            format_last_submenu_item_text(&sync_logs[0]),
+                            format_latest_submenu_item_text(&sync_logs[0]),
                             true,
                             None,
                         ))
                         .unwrap();
                 } else {
-                    for (item_index, _item) in sync_last_i.items().iter().enumerate() {
+                    for (item_index, _item) in sync_latest_i.items().iter().enumerate() {
                         _item
                             .as_menuitem()
                             .unwrap()
-                            .set_text(format_last_submenu_item_text(&sync_logs[item_index]))
+                            .set_text(format_latest_submenu_item_text(&sync_logs[item_index]))
                     }
                 }
-                sync_last_i.set_enabled(true);
+                sync_latest_i.set_enabled(true);
             }
             Event::UserEvent(CustomEvent::SyncEnded { is_ok }) => {
+                let is_ok_all = !is_ok.contains(&false);
+
                 sync_logs[0].is_ongoing = false;
+                sync_logs[0].is_ok = Some(is_ok_all);
                 sync_each_i.set_enabled(true);
                 sync_all_i.set_enabled(true);
-                sync_last_i.set_text(format_last_submenu_text(
+                sync_latest_i.set_text(format_latest_submenu_text(
                     CommandName::Sync,
                     Some(&sync_logs[0]),
                 ));
                 if maintain_all_i.is_enabled() {
-                    let is_unhealthy = is_ok.contains(&false);
-
-                    if is_unhealthy {
+                    if is_ok_all {
                         tray_icon.set_icon(Some(event_error_icon.clone())).unwrap();
                         tray_icon.set_icon_as_template(true);
                     } else {
@@ -600,15 +732,34 @@ pub(crate) async fn run_daemon() {
                     }
                 }
 
-                sync_last_i
+                sync_latest_i
                     .items()
                     .first()
                     .unwrap()
                     .as_menuitem()
                     .unwrap()
-                    .set_text(format_last_submenu_item_text(&sync_logs[0]));
+                    .set_text(format_latest_submenu_item_text(&sync_logs[0]));
 
                 sync_status_i.set_text(format_sync_status_text(&Some(is_ok)));
+
+                let event_allocate_command_tx = event_allocate_command_tx.clone();
+                let event_repo_paths = event_repo_paths.clone();
+
+                tokio::spawn(async move {
+                    event_allocate_command_tx
+                        .send(CommandMessage {
+                            message_type: CommandMessageType::StartByManual,
+                            command_dt: Local::now(),
+                            command_name: CommandName::Allocate,
+                            command_args: CommandArgs {
+                                repo_paths: event_repo_paths.clone(),
+                                includes_unchanged: None,
+                                suffix: None,
+                            },
+                        })
+                        .await
+                        .unwrap();
+                });
             }
             Event::UserEvent(CustomEvent::ScheduledMaintainTriggered { command_next_dt }) => {
                 maintain_next_dt = command_next_dt;
@@ -626,9 +777,12 @@ pub(crate) async fn run_daemon() {
                 maintain_logs.insert(
                     0,
                     CommandLog {
+                        command_name: CommandName::Maintain,
                         command_dt,
                         suffix: None,
+                        progress: None,
                         is_ongoing: true,
+                        is_ok: None,
                     },
                 );
                 if maintain_logs.len() > LOG_MAX_CT {
@@ -642,48 +796,149 @@ pub(crate) async fn run_daemon() {
                     .expect("unable to remove log");
                     maintain_logs.remove(LOG_MAX_CT);
                 }
-                maintain_last_i.set_text(format_last_submenu_text(
+                maintain_latest_i.set_text(format_latest_submenu_text(
                     CommandName::Maintain,
                     Some(&maintain_logs[0]),
                 ));
-                if maintain_last_i.items().len() < LOG_MAX_CT {
-                    maintain_last_i
+                if maintain_latest_i.items().len() < LOG_MAX_CT {
+                    maintain_latest_i
                         .prepend(&MenuItem::new(
-                            format_last_submenu_item_text(&maintain_logs[0]),
+                            format_latest_submenu_item_text(&maintain_logs[0]),
                             true,
                             None,
                         ))
                         .unwrap();
                 } else {
-                    for (item_index, _item) in maintain_last_i.items().iter().enumerate() {
+                    for (item_index, _item) in maintain_latest_i.items().iter().enumerate() {
                         _item
                             .as_menuitem()
                             .unwrap()
-                            .set_text(format_last_submenu_item_text(&maintain_logs[item_index]))
+                            .set_text(format_latest_submenu_item_text(&maintain_logs[item_index]))
                     }
                 }
-                maintain_last_i.set_enabled(true);
+                maintain_latest_i.set_enabled(true);
             }
             Event::UserEvent(CustomEvent::MaintainEnded { is_ok }) => {
                 maintain_logs[0].is_ongoing = false;
+                maintain_logs[0].is_ok = Some(is_ok);
                 maintain_all_i.set_enabled(true);
                 if sync_all_i.is_enabled() {
                     tray_icon.set_icon(Some(event_base_icon.clone())).unwrap();
                     tray_icon.set_icon_as_template(true);
                 }
 
-                maintain_last_i.set_text(format_last_submenu_text(
+                maintain_latest_i.set_text(format_latest_submenu_text(
                     CommandName::Maintain,
                     Some(&maintain_logs[0]),
                 ));
-                maintain_last_i
+                maintain_latest_i
                     .items()
                     .first()
                     .unwrap()
                     .as_menuitem()
                     .unwrap()
-                    .set_text(format_last_submenu_item_text(&maintain_logs[0]));
+                    .set_text(format_latest_submenu_item_text(&maintain_logs[0]));
                 maintain_status_i.set_text(format_maintain_status_text(&is_ok));
+            }
+            Event::UserEvent(CustomEvent::AllocateStarted { command_dt }) => {
+                if sync_all_i.is_enabled() && maintain_all_i.is_enabled() {
+                    tray_icon.set_icon(Some(event_active_icon.clone())).unwrap();
+                    tray_icon.set_icon_as_template(true);
+                }
+
+                allocate_i.set_enabled(false);
+                allocate_logs.insert(
+                    0,
+                    CommandLog {
+                        command_name: CommandName::Allocate,
+                        command_dt,
+                        suffix: None,
+                        progress: None,
+                        is_ongoing: true,
+                        is_ok: None,
+                    },
+                );
+                if allocate_logs.len() > LOG_MAX_CT {
+                    let deleted_log = allocate_logs.get(LOG_MAX_CT).unwrap();
+                    fs::remove_file(format_command_log_path(
+                        &config_dir_path,
+                        CommandName::Allocate,
+                        &deleted_log.command_dt,
+                        &deleted_log.suffix,
+                    ))
+                    .expect("unable to remove log");
+                    allocate_logs.remove(LOG_MAX_CT);
+                }
+                allocate_latest_i.set_text(format_latest_submenu_text(
+                    CommandName::Allocate,
+                    Some(&allocate_logs[0]),
+                ));
+                if allocate_latest_i.items().len() < LOG_MAX_CT {
+                    allocate_latest_i
+                        .prepend(&MenuItem::new(
+                            format_latest_submenu_item_text(&allocate_logs[0]),
+                            true,
+                            None,
+                        ))
+                        .unwrap();
+                } else {
+                    for (item_index, _item) in allocate_latest_i.items().iter().enumerate() {
+                        _item
+                            .as_menuitem()
+                            .unwrap()
+                            .set_text(format_latest_submenu_item_text(&allocate_logs[item_index]))
+                    }
+                }
+                allocate_latest_i.set_enabled(true);
+            }
+            Event::UserEvent(CustomEvent::AllocateEnded { is_ok }) => {
+                allocate_logs[0].is_ongoing = false;
+                allocate_logs[0].is_ok = Some(is_ok);
+                allocate_i.set_enabled(true);
+                if sync_all_i.is_enabled() && maintain_all_i.is_enabled() {
+                    tray_icon.set_icon(Some(event_base_icon.clone())).unwrap();
+                    tray_icon.set_icon_as_template(true);
+                }
+
+                allocate_latest_i.set_text(format_latest_submenu_text(
+                    CommandName::Allocate,
+                    Some(&allocate_logs[0]),
+                ));
+                allocate_latest_i
+                    .items()
+                    .first()
+                    .unwrap()
+                    .as_menuitem()
+                    .unwrap()
+                    .set_text(format_latest_submenu_item_text(&allocate_logs[0]));
+            }
+            Event::UserEvent(CustomEvent::CommandProgressNotified {
+                command_name,
+                progress,
+            }) => {
+                match command_name {
+                    CommandName::Sync => {
+                        sync_logs[0].progress = Some(progress);
+                        sync_latest_i.set_text(format_latest_submenu_text(
+                            CommandName::Sync,
+                            Some(&sync_logs[0]),
+                        ));
+                    }
+                    CommandName::Maintain => {
+                        maintain_logs[0].progress = Some(progress);
+                        maintain_latest_i.set_text(format_latest_submenu_text(
+                            CommandName::Maintain,
+                            Some(&maintain_logs[0]),
+                        ));
+                    }
+                    CommandName::Allocate => {
+                        allocate_logs[0].progress = Some(progress);
+                        allocate_latest_i.set_text(format_latest_submenu_text(
+                            CommandName::Allocate,
+                            Some(&allocate_logs[0]),
+                        ));
+                    }
+                };
             }
             Event::UserEvent(CustomEvent::DayChanged) => {
                 sync_next_i.set_text(format_next_item_text(
@@ -696,7 +951,7 @@ pub(crate) async fn run_daemon() {
                     &maintain_schedule_is_enabled,
                     &maintain_next_dt,
                 ));
-                sync_last_i.set_text(format_last_submenu_text(
+                sync_latest_i.set_text(format_latest_submenu_text(
                     CommandName::Sync,
                     if &sync_logs.len() > &0 {
                         Some(&sync_logs[0])
@@ -704,13 +959,13 @@ pub(crate) async fn run_daemon() {
                         None
                     },
                 ));
-                for (index, last_i) in sync_last_i.items().iter().enumerate() {
-                    last_i
+                for (index, latest_i) in sync_latest_i.items().iter().enumerate() {
+                    latest_i
                         .as_menuitem()
                         .unwrap()
-                        .set_text(format_last_submenu_item_text(&sync_logs[index]));
+                        .set_text(format_latest_submenu_item_text(&sync_logs[index]));
                 }
-                maintain_last_i.set_text(format_last_submenu_text(
+                maintain_latest_i.set_text(format_latest_submenu_text(
                     CommandName::Maintain,
                     if &maintain_logs.len() > &0 {
                         Some(&maintain_logs[0])
@@ -718,11 +973,25 @@ pub(crate) async fn run_daemon() {
                         None
                     },
                 ));
-                for (index, last_i) in maintain_last_i.items().iter().enumerate() {
-                    last_i
+                for (index, latest_i) in maintain_latest_i.items().iter().enumerate() {
+                    latest_i
                         .as_menuitem()
                         .unwrap()
-                        .set_text(format_last_submenu_item_text(&maintain_logs[index]));
+                        .set_text(format_latest_submenu_item_text(&maintain_logs[index]));
+                }
+                allocate_latest_i.set_text(format_latest_submenu_text(
+                    CommandName::Allocate,
+                    if &allocate_logs.len() > &0 {
+                        Some(&allocate_logs[0])
+                    } else {
+                        None
+                    },
+                ));
+                for (index, latest_i) in allocate_latest_i.items().iter().enumerate() {
+                    latest_i
+                        .as_menuitem()
+                        .unwrap()
+                        .set_text(format_latest_submenu_item_text(&allocate_logs[index]));
                 }
             }
             _ => (),
@@ -832,6 +1101,25 @@ pub(crate) async fn run_daemon() {
                             .await
                             .unwrap();
                     });
+                } else if event.id == allocate_i.id() {
+                    let event_allocate_command_tx = event_allocate_command_tx.clone();
+                    let event_repo_paths = event_repo_paths.clone();
+
+                    tokio::spawn(async move {
+                        event_allocate_command_tx
+                            .send(CommandMessage {
+                                message_type: CommandMessageType::StartByManual,
+                                command_dt: Local::now(),
+                                command_name: CommandName::Allocate,
+                                command_args: CommandArgs {
+                                    repo_paths: event_repo_paths.clone(),
+                                    includes_unchanged: None,
+                                    suffix: None,
+                                },
+                            })
+                            .await
+                            .unwrap();
+                    });
                 } else {
                     for (repo_index, _item) in sync_each_i.items().iter().enumerate() {
                         if event.id == _item.id() {
@@ -859,8 +1147,9 @@ pub(crate) async fn run_daemon() {
                     }
 
                     for (command_name, submenu_last, logs) in vec![
-                        (CommandName::Sync, &sync_last_i, &sync_logs),
-                        (CommandName::Maintain, &maintain_last_i, &maintain_logs),
+                        (CommandName::Sync, &sync_latest_i, &sync_logs),
+                        (CommandName::Maintain, &maintain_latest_i, &maintain_logs),
+                        (CommandName::Allocate, &allocate_latest_i, &allocate_logs),
                     ] {
                         for (log_index, _item) in submenu_last.items().iter().enumerate() {
                             if event.id == _item.id() {

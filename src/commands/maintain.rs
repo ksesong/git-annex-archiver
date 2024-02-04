@@ -46,12 +46,14 @@ pub(crate) async fn maintain(
     repo_paths: &Vec<PathBuf>,
     check_timeout_m: u64,
     log_targets: (&mut LogTarget<'_>, &mut LogTarget<'_>),
+    notify_progress: impl Fn(String),
 ) -> Result<bool, ()> {
     let (log_target, log_target_sync) = log_targets;
     if let Err(_e) = tokio::time::timeout(
         std::time::Duration::from_secs(check_timeout_m * 60),
         async move {
-            for repo_path in repo_paths {
+            for (repo_index, repo_path) in repo_paths.iter().enumerate() {
+                notify_progress(format!("Preparation, {} of {}", repo_index + 1, repo_paths.len()));
                 untrack_embedded_git(repo_path, log_target).await;
 
                 command_output_logfile(
@@ -80,7 +82,8 @@ pub(crate) async fn maintain(
                 .await;
             }
 
-            for repo_path in repo_paths {
+            for (repo_index, repo_path) in repo_paths.iter().enumerate() {
+                notify_progress(format!("{} of {}", repo_index + 1, repo_paths.len()));
                 let available_remotes = test_available_remotes(repo_path, log_target).await;
 
                 command_output_logfile(

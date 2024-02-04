@@ -12,6 +12,7 @@ use crate::daemon::run_daemon;
 pub mod commands;
 pub mod format;
 pub mod types;
+pub mod platform;
 
 #[cfg(not(target_os = "linux"))]
 pub mod daemon;
@@ -63,6 +64,7 @@ async fn main() {
                 &repo_paths.into_iter().map(|x| PathBuf::from(&x)).collect(),
                 all,
                 &mut LogTarget::Stdout(&mut io::stdout()),
+                |_| {}
             )
             .await
             .unwrap();
@@ -78,6 +80,7 @@ async fn main() {
                     &mut LogTarget::Stdout(&mut io::stdout()),
                     &mut LogTarget::Stdout(&mut io::stdout()),
                 ),
+                |_| {},
             )
             .await
             .unwrap();

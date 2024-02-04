@@ -17,7 +17,7 @@ jobs:
     name: extract-version
     runs-on: ubuntu-latest
     outputs:
-      last_tagged_version: ${{ steps.tag.outputs.version }}
+      latest_tagged_version: ${{ steps.tag.outputs.version }}
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v3
@@ -33,7 +33,7 @@ jobs:
     name: create-release
     needs: ["extract-version"]
     runs-on: ubuntu-latest
-    if: ${{ needs.extract-version.outputs.version != needs.extract-version.last_tagged_version }}
+    if: ${{ needs.extract-version.outputs.version != needs.extract-version.latest_tagged_version }}
     outputs:
       sha256: ${{ steps.hash.outputs.sha256 }}
     steps:

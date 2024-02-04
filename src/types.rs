@@ -1,9 +1,11 @@
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
 
+#[derive(Clone, Debug)]
 pub enum CommandName {
   Sync,
   Maintain,
+  Allocate
 }
 
 #[derive(PartialEq, Debug)]
@@ -28,7 +30,10 @@ pub struct CommandMessage {
 }
 
 pub struct CommandLog {
+  pub command_name: CommandName,
   pub command_dt: DateTime<Local>,
   pub suffix: Option<String>,
+  pub progress: Option<String>,
   pub is_ongoing: bool,
+  pub is_ok: Option<bool>
 }

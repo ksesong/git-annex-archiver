@@ -6,6 +6,7 @@ use tokio::{
     process::Command,
 };
 
+pub mod allocate;
 pub mod maintain;
 pub mod sync;
 

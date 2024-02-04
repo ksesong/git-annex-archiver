@@ -1,7 +1,12 @@
 use chrono::{prelude::*, Duration};
 use lazy_static::lazy_static;
 use regex::bytes::Regex;
-use std::path::{Path, PathBuf};
+use rev_buf_reader::RevBufReader;
+use std::{
+    fs::File,
+    io::BufRead,
+    path::{Path, PathBuf},
+};
 
 use crate::types::{CommandLog, CommandName};
 
@@ -24,6 +29,14 @@ fn format_dt(dt: &DateTime<Local>) -> String {
         },
         dt.format("%H:%M").to_string()
     );
+}
+
+fn format_is_ok(is_ok: &Option<bool>) -> String {
+    match is_ok {
+        None => String::from(""),
+        Some(true) => String::from(""),
+        Some(false) => String::from("*"),
+    }
 }
 
 pub fn format_repo_path_display(path: &Path) -> String {
@@ -67,6 +80,7 @@ pub fn format_next_item_text(
                 match command_name {
                     CommandName::Sync => "Sync",
                     CommandName::Maintain => "Run",
+                    _ => "",
                 },
                 format_dt(&dt)
             )
@@ -77,41 +91,53 @@ pub fn format_next_item_text(
                 String::from(match command_name {
                     CommandName::Sync => "Sync",
                     CommandName::Maintain => "Maintenance",
+                    _ => "",
                 })
             )
         }
     };
 }
 
-pub fn format_last_submenu_text(command_name: CommandName, log: Option<&CommandLog>) -> String {
-    if log.is_some() && log.unwrap().is_ongoing == true {
-        return String::from(match command_name {
-            CommandName::Sync => "Syncing…",
-            CommandName::Maintain => "Running Maintenance…",
-        });
-    }
+pub fn format_latest_submenu_text(command_name: CommandName, log: Option<&CommandLog>) -> String {
     return match log {
         None => format!(
             "No Recorded {}",
             match command_name {
                 CommandName::Sync => "Sync",
                 CommandName::Maintain => "Maintenance",
+                CommandName::Allocate => "Allocation",
             }
         ),
-        Some(log) => format!(
-            "Last {}, {}",
-            match command_name {
-                CommandName::Sync => "Sync",
-                CommandName::Maintain => "Run",
-            },
-            format_dt(&log.command_dt)
-        ),
+        Some(log) => match log.is_ongoing {
+            true => format!(
+                "{}{}",
+                match command_name {
+                    CommandName::Sync => "Syncing",
+                    CommandName::Maintain => "Running Maintenance",
+                    CommandName::Allocate => "Allocating",
+                },
+                match &log.progress {
+                    None => String::from(""),
+                    Some(progress) => format!(" – {}", progress.to_string())
+                }
+            ),
+            false => format!(
+                "Latest {}, {}{}",
+                match command_name {
+                    CommandName::Sync => "Sync",
+                    CommandName::Maintain => "Run",
+                    CommandName::Allocate => "Allocation",
+                },
+                format_dt(&log.command_dt),
+                format_is_ok(&log.is_ok),
+            ),
+        },
     };
 }
 
-pub fn format_last_submenu_item_text(log: &CommandLog) -> String {
+pub fn format_latest_submenu_item_text(log: &CommandLog) -> String {
     return vec![
-        format_dt(&log.command_dt),
+        format!("{}{}", format_dt(&log.command_dt), format_is_ok(&log.is_ok)),
         match &log.suffix {
             None => String::from(""),
             Some(suffix) => suffix.to_string(),
@@ -169,12 +195,13 @@ pub fn format_schedule_active_text(
         match command_name {
             CommandName::Sync => "Sync",
             CommandName::Maintain => "Maintenance",
+            _ => "",
         },
     );
 }
 
 pub fn format_command_log_path(
-    config_dir_path: &Path,
+    config_dir_path: &PathBuf,
     command_name: CommandName,
     dt: &DateTime<Local>,
     suffix: &Option<String>,
@@ -184,10 +211,12 @@ pub fn format_command_log_path(
         match command_name {
             CommandName::Sync => "sync",
             CommandName::Maintain => "maintain",
+            CommandName::Allocate => "allocate",
         },
         match command_name {
             CommandName::Sync => "sync-",
             CommandName::Maintain => "maintain-",
+            CommandName::Allocate => "allocate-",
         },
         dt.format(LOG_DT_FORMAT).to_string(),
         match suffix {
@@ -197,7 +226,7 @@ pub fn format_command_log_path(
     ))
 }
 
-pub fn parse_command_log_path(log_path: &Path) -> CommandLog {
+pub fn parse_command_log_path(log_path: &PathBuf) -> CommandLog {
     let log_name = log_path
         .file_name()
         .unwrap()
@@ -207,7 +236,22 @@ pub fn parse_command_log_path(log_path: &Path) -> CommandLog {
         .unwrap();
     let log_segments: Vec<&str> = log_name.split("-").collect();
 
+    fn is_ok(log_path: &PathBuf) -> Option<bool> {
+        let buf = RevBufReader::new(File::open(log_path).unwrap());
+        match &buf.lines().next().unwrap().unwrap()[..] {
+            "not ok" => Some(false),
+            "ok" => Some(true),
+            _ => None,
+        }
+    }
+
     return CommandLog {
+        command_name: match log_segments[0] {
+            "sync" => CommandName::Sync,
+            "maintain" => CommandName::Maintain,
+            "allocate" => CommandName::Allocate,
+            _ => CommandName::Sync,
+        },
         command_dt: NaiveDateTime::parse_from_str(&log_segments[1..5].join("-"), LOG_DT_FORMAT)
             .unwrap()
             .and_local_timezone(chrono::offset::Local)
@@ -217,6 +261,8 @@ pub fn parse_command_log_path(log_path: &Path) -> CommandLog {
         } else {
             Some(String::from(log_segments[5]))
         },
+        progress: None,
         is_ongoing: false,
+        is_ok: is_ok(log_path),
     };
 }

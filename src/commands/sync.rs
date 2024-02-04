@@ -308,11 +308,13 @@ pub(crate) async fn sync(
     repo_paths: &Vec<PathBuf>,
     includes_all: bool,
     log_target: &mut LogTarget<'_>,
+    notify_progress: impl Fn(String),
 ) -> Result<Vec<bool>, ()> {
     let mut repo_ok: Vec<bool> = vec![];
-    for repo_path in repo_paths {
-        let available_remotes = test_available_remotes(repo_path, log_target).await;
+    for (repo_index, repo_path) in repo_paths.iter().enumerate() {
+        notify_progress(format!("{} of {}", repo_index + 1, repo_paths.len()));
 
+        let available_remotes = test_available_remotes(repo_path, log_target).await;
         make_embedded_git_copies(repo_path, log_target).await;
 
         let unchanged_stdout = &Command::new("git")
@@ -398,6 +400,13 @@ pub(crate) async fn sync(
         )
         .await;
     }
-    log("ok", log_target).await;
+    log(
+        match repo_ok.contains(&false) {
+            true => "not ok",
+            false => "ok",
+        },
+        log_target,
+    )
+    .await;
     Ok(repo_ok)
 }
