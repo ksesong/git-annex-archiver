@@ -114,7 +114,7 @@ pub fn format_latest_submenu_text(command_name: CommandName, log: Option<&Comman
                 match command_name {
                     CommandName::Sync => "Syncing",
                     CommandName::Maintain => "Running Maintenance",
-                    CommandName::Allocate => "Allocating",
+                    CommandName::Allocate => "Allocating Files",
                 },
                 match &log.progress {
                     None => String::from(""),
