@@ -1,6 +1,6 @@
 [package]
 name = "git-annex-archiver"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 
 [target.'cfg(target_os = "macos")'.dependencies]
