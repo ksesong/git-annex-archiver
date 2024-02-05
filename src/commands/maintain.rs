@@ -44,13 +44,13 @@ async fn untrack_embedded_git(search_path: &PathBuf, log_target: &mut LogTarget<
 
 pub(crate) async fn maintain(
     repo_paths: &Vec<PathBuf>,
-    check_timeout_m: u64,
+    timeout_m: u64,
     log_targets: (&mut LogTarget<'_>, &mut LogTarget<'_>),
     notify_progress: impl Fn(String),
 ) -> Result<bool, ()> {
     let (log_target, log_target_sync) = log_targets;
     if let Err(_e) = tokio::time::timeout(
-        std::time::Duration::from_secs(check_timeout_m * 60),
+        std::time::Duration::from_secs(timeout_m * 60),
         async move {
             let mut shuffled_repo_paths = repo_paths.clone();
             shuffled_repo_paths.shuffle(&mut rand::thread_rng());
