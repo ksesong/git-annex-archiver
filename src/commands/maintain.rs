@@ -52,8 +52,15 @@ pub(crate) async fn maintain(
     if let Err(_e) = tokio::time::timeout(
         std::time::Duration::from_secs(check_timeout_m * 60),
         async move {
+            let mut shuffled_repo_paths = repo_paths.clone();
+            shuffled_repo_paths.shuffle(&mut rand::thread_rng());
+
             for (repo_index, repo_path) in repo_paths.iter().enumerate() {
-                notify_progress(format!("Preparation, {} of {}", repo_index + 1, repo_paths.len()));
+                notify_progress(format!(
+                    "Preparation, {} of {}",
+                    repo_index + 1,
+                    repo_paths.len()
+                ));
                 untrack_embedded_git(repo_path, log_target).await;
 
                 command_output_logfile(
@@ -82,7 +89,7 @@ pub(crate) async fn maintain(
                 .await;
             }
 
-            for (repo_index, repo_path) in repo_paths.iter().enumerate() {
+            for (repo_index, repo_path) in shuffled_repo_paths.iter().enumerate() {
                 notify_progress(format!("{}/{}", repo_index + 1, repo_paths.len()));
                 let available_remotes = test_available_remotes(repo_path, log_target).await;
 
